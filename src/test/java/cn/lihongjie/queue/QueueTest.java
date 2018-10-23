@@ -214,7 +214,6 @@ public class QueueTest {
 		threadPool.submit(() -> {
 
 
-
 			try {
 				Session session = connection.createSession(false, Session.AUTO_ACKNOWLEDGE);
 				MessageProducer producer = session.createProducer(exclusiveQueue);
@@ -277,8 +276,180 @@ public class QueueTest {
 		Assert.assertThat(list, Is.is(received));
 
 
+	}
+
+
+	@Test
+	public void testTransSessionProducerNotCommit() throws Exception {
+
+
+		Semaphore semaphore = new Semaphore(0);
+		CountDownLatch latch = new CountDownLatch(1);
+
+		// 生产者
+
+
+		threadPool.submit(() -> {
+
+
+			try {
+				Session session = connection.createSession(true, Session.SESSION_TRANSACTED);
+
+				MessageProducer producer = session.createProducer(testQueue);
+
+
+				producer.send(session.createObjectMessage("aaa"));
+
+				logger.info("生产者以及发送消息, 但是没有提交事务");
+				// not commit
+
+			} catch (JMSException e) {
+				e.printStackTrace();
+			}
+
+			semaphore.release();
+
+
+		});
+
+
+		// 消费者
+		threadPool.submit(() -> {
+
+
+			try {
+				semaphore.acquire();
+			} catch (InterruptedException e) {
+				e.printStackTrace();
+			}
+
+			try {
+				Session session = connection.createSession(true, Session.SESSION_TRANSACTED);
+
+				MessageConsumer consumer = session.createConsumer(testQueue);
+
+
+				Message message = consumer.receiveNoWait();
+
+
+				if (message == null) {
+					logger.info("消费者没有收到消息, 表明没有提交的的事务的消息不会保存在服务端");
+					latch.countDown();
+				}
+
+				// not commit
+
+			} catch (JMSException e) {
+				e.printStackTrace();
+			}
+
+
+		});
+
+
+		latch.await();
+
 
 	}
 
 
+	@Test
+	public void testTransSessionConsumerNotCommit() throws Exception {
+
+
+		Semaphore producerDone = new Semaphore(0);
+		Semaphore firstConsumerDone = new Semaphore(0);
+		CountDownLatch latch = new CountDownLatch(1);
+
+		// 生产者
+
+
+		threadPool.submit(() -> {
+
+
+			try {
+				Session session = connection.createSession(true, Session.SESSION_TRANSACTED);
+
+				MessageProducer producer = session.createProducer(testQueue);
+
+
+				producer.send(session.createObjectMessage("aaa"));
+
+				logger.info("生产者发送消息, 并且提交事务");
+				session.commit();
+				// not commit
+
+			} catch (JMSException e) {
+				e.printStackTrace();
+			}
+
+			producerDone.release(2);
+
+
+		});
+
+
+		for (int i = 0; i < 2; i++) {
+
+
+			// 消费者
+			final int  finalI = i;
+			threadPool.submit(() -> {
+
+
+				try {
+					producerDone.acquire();
+					logger.info(String.format("生产者准备就绪, 当前消费者为 %d", finalI));
+					if (finalI == 1) {
+
+						firstConsumerDone.acquire();
+					}
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
+
+				try {
+					Session session = connection.createSession(true, Session.SESSION_TRANSACTED);
+
+					MessageConsumer consumer = session.createConsumer(testQueue);
+
+
+					Message message = consumer.receive();
+
+
+					if (message != null) {
+						logger.info("消费者收到消息");
+
+						if (finalI == 0) {
+
+							logger.info("第一个消费者, 我将不提交事务");
+							firstConsumerDone.release();
+
+						} else {
+
+							logger.info("第二个消费者, 提交事务");
+
+							session.commit();
+							latch.countDown();
+						}
+					}
+
+					session.close();
+					// not commit
+
+				} catch (JMSException e) {
+					e.printStackTrace();
+				}
+
+
+			});
+
+		}
+		latch.await();
+
+
+	}
 }
+
+
+
