@@ -1,6 +1,7 @@
 package cn.lihongjie.queue;
 
 import org.apache.activemq.ActiveMQConnectionFactory;
+import org.apache.activemq.broker.BrokerService;
 import org.apache.activemq.command.ActiveMQQueue;
 import org.apache.activemq.junit.EmbeddedActiveMQBroker;
 import org.hamcrest.core.Is;
@@ -18,6 +19,11 @@ import java.util.stream.Collectors;
 import static org.nutz.log.Logs.get;
 
 /**
+ *
+ *
+ *
+ *
+ *
  * @author 982264618@qq.com
  */
 
@@ -28,10 +34,10 @@ public class QueueTest {
 
 	private static String URL = "vm://embedded-broker";
 
-	@Rule
+	@ClassRule
 	public static EmbeddedActiveMQBroker broker = new EmbeddedActiveMQBroker();
 
-	private static ConnectionFactory connectionFactory;
+	private static ActiveMQConnectionFactory connectionFactory;
 	private static Connection connection;
 	private Session tranSession;
 	private Session session;
@@ -44,6 +50,7 @@ public class QueueTest {
 	public static void init() throws JMSException {
 		broker.start();
 		connectionFactory = new ActiveMQConnectionFactory(broker.getVmURL(false));
+		connectionFactory.setMaxThreadPoolSize(100);
 		connection = connectionFactory.createConnection();
 		connection.start();
 
@@ -63,7 +70,7 @@ public class QueueTest {
 	@Before
 	public void setUp() throws Exception {
 
-		testQueue = new ActiveMQQueue(UUID.randomUUID().toString());
+		testQueue = new ActiveMQQueue(UUID.randomUUID().toString()+ "?consumer.prefetchSize=1");
 		exclusiveQueue = new ActiveMQQueue("TEST.QUEUE1111?consumer.exclusive=true");
 
 
@@ -393,7 +400,7 @@ public class QueueTest {
 
 
 			// 消费者
-			final int  finalI = i;
+			final int finalI = i;
 			threadPool.submit(() -> {
 
 
@@ -448,6 +455,82 @@ public class QueueTest {
 		latch.await();
 
 
+	}
+
+
+	@Test
+	public void testAsyncConsumer() throws Exception {
+
+		int messageCount = 5;
+		CountDownLatch latch = new CountDownLatch(messageCount);
+		CyclicBarrier barrier = new CyclicBarrier(messageCount);
+		// 发送消息
+		Session session = connection.createSession(false, Session.AUTO_ACKNOWLEDGE);
+
+
+		MessageProducer producer = session.createProducer(testQueue);
+
+		for (int i = 0; i < messageCount; i++) {
+
+			producer.send(session.createTextMessage(String.valueOf(i)));
+		}
+
+
+		session.close();
+
+
+		for (int i = 0; i < messageCount; i++) {
+
+			threadPool.submit(() -> {
+
+
+				CountDownLatch internalLatch = new CountDownLatch(1);
+				try {
+					Session session2 = null;
+					session2 = connection.createSession(false, Session.AUTO_ACKNOWLEDGE);
+
+
+					MessageConsumer consumer = session2.createConsumer(testQueue);
+
+
+					consumer.setMessageListener(new MessageListener() {
+						@Override
+						public void onMessage(Message message) {
+							try {
+								Thread.currentThread().sleep(1000);
+							} catch (InterruptedException e) {
+								e.printStackTrace();
+							}
+							try {
+								logger.info((((TextMessage) message)).getText());
+							} catch (JMSException e) {
+								e.printStackTrace();
+							}
+							latch.countDown();
+
+							internalLatch.countDown();
+
+						}
+					});
+				} catch (JMSException e) {
+					e.printStackTrace();
+				}
+
+
+				try {
+					logger.info("wait message arrive");
+					internalLatch.await();
+					logger.info("message arrived");
+				} catch (InterruptedException e) {
+					e.printStackTrace();
+				}
+
+
+			});
+
+
+		}
+		latch.await();
 	}
 }
 
